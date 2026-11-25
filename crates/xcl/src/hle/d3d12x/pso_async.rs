@@ -53,6 +53,11 @@ pub(super) fn build_is_wanted() -> bool {
     BUILDING.with(|b| b.borrow().as_ref().is_some_and(|p| p.demand.lock().unwrap().wanted))
 }
 
+/// This thread is a worker building a pipeline the title's next submit will wait for.
+pub(super) fn build_is_needed_by_submit() -> bool {
+    BUILDING.with(|b| b.borrow().as_ref().is_some_and(|p| p.demand.lock().unwrap().by_submit))
+}
+
 /// Whether one of the title's threads waits for what this thread is doing, to be asked later and
 /// from another thread: a worker's build as `build_is_wanted`; a thread that is not XCL's is the
 /// title's own.
@@ -429,6 +434,31 @@ mod used_tests {
     }
 
     #[test]
+    fn a_build_knows_a_submit_needs_it() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        for (standin, needed) in [(0x7E57_F001usize, true), (0x7E57_F002, false)] {
+            let seen = seen.clone();
+            submit(standin, true, Box::new(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                seen.lock().unwrap().push((needed, build_is_needed_by_submit()));
+                0x6262
+            }));
+            if needed {
+                need_by_submit(standin);
+            }
+        }
+        let start = std::time::Instant::now();
+        while (is_pending(0x7E57_F001) || is_pending(0x7E57_F002)) && start.elapsed() < std::time::Duration::from_secs(30) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let mut seen = seen.lock().unwrap().clone();
+        seen.sort();
+        assert_eq!(seen, [(false, false), (true, true)]);
+        let _ = released(0x7E57_F001);
+        let _ = released(0x7E57_F002);
+    }
+
+    #[test]
     fn a_pipeline_a_submit_needs_is_built_before_the_queue() {
         let order = Arc::new(Mutex::new(Vec::new()));
         let backlog = 8 * crate::gpu::recomp::dxc::compile_threads();
@@ -681,7 +711,7 @@ pub fn want(pso: usize) {
     }
 }
 
-/// A call with `pso` was put off to the submit: its build goes before the workers' queue.
+/// A call with `pso` was put off to the submit: its build goes before the workers' queue and does not wait for a turn among the big ones.
 pub fn need_by_submit(pso: usize) {
     let Some(p) = entry(pso) else { return };
     if !std::mem::replace(&mut p.demand.lock().unwrap().by_submit, true) {

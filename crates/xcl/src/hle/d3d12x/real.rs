@@ -3589,9 +3589,17 @@ impl Drop for SlotGuard {
 static BIG_COMPILES: Slots = Slots { n: Mutex::new(0), cv: std::sync::Condvar::new(), most: 0 };
 const GIANT_DRIVER_COMPILE: usize = 4 << 20;
 static GIANT_COMPILES: Slots = Slots { n: Mutex::new(0), cv: std::sync::Condvar::new(), most: 1 };
+/// big compiles the title's next submit waits for: four at once, each with its commit headroom
+static SUBMIT_COMPILES: Slots = Slots { n: Mutex::new(0), cv: std::sync::Condvar::new(), most: 4 };
 
 fn compile_slots(bytes: usize) -> &'static Slots {
-    if bytes >= GIANT_DRIVER_COMPILE { &GIANT_COMPILES } else { &BIG_COMPILES }
+    if bytes >= GIANT_DRIVER_COMPILE {
+        &GIANT_COMPILES
+    } else if super::pso_async::build_is_needed_by_submit() {
+        &SUBMIT_COMPILES
+    } else {
+        &BIG_COMPILES
+    }
 }
 
 /// A driver compile of `bytes` of DXIL through `build`: a huge one on an `xcl-pso*` worker
