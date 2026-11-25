@@ -73,14 +73,20 @@ pub fn find_table(data: &[u8]) -> Vec<usize> {
     data.windows(t.len()).enumerate().filter(|(_, w)| *w == t.as_slice()).map(|(i, _)| i).collect()
 }
 
-/// In `data` (a mapped section, writable): the largest mode becomes `size`. Returns the offsets
-/// of the tables changed.
+/// In `data` (a mapped section, writable): the largest mode becomes `size`, and so does every
+/// other mode larger than it on either side – the title takes the largest mode in the table, so
+/// at 854x480 a 2560x1440 left in it would be picked instead. Returns the offsets of the tables
+/// changed.
 pub fn patch(data: &mut [u8], size: (u32, u32)) -> Vec<usize> {
     let at = find_table(data);
     for &i in &at {
-        let e = i + 16 * (MODES.len() - 1);
-        data[e..e + 4].copy_from_slice(&size.0.to_le_bytes());
-        data[e + 4..e + 8].copy_from_slice(&size.1.to_le_bytes());
+        for (j, m) in MODES.iter().enumerate() {
+            if j == MODES.len() - 1 || m[0] > size.0 || m[1] > size.1 {
+                let e = i + 16 * j;
+                data[e..e + 4].copy_from_slice(&size.0.to_le_bytes());
+                data[e + 4..e + 8].copy_from_slice(&size.1.to_le_bytes());
+            }
+        }
     }
     at
 }
@@ -255,6 +261,19 @@ mod tests {
         assert!(find_table(&data).is_empty());
         let mut other = vec![0u8; 200];
         assert!(patch(&mut other, (5120, 2160)).is_empty());
+    }
+
+    #[test]
+    fn patch_below_a_mode_rewrites_every_larger_mode() {
+        let mut data = table_bytes();
+        assert_eq!(patch(&mut data, (854, 480)), vec![0]);
+        let modes: Vec<(u32, u32)> = data.chunks(16).map(|m| (u32::from_le_bytes(m[0..4].try_into().unwrap()), u32::from_le_bytes(m[4..8].try_into().unwrap()))).collect();
+        // the title takes the largest mode: none is left above the render size
+        assert_eq!(modes, vec![(854, 480); 5]);
+        let mut data = table_bytes();
+        patch(&mut data, (1664, 936));
+        assert_eq!(data[..32], table_bytes()[..32]);
+        assert_eq!(&data[32..40], [1664u32.to_le_bytes(), 936u32.to_le_bytes()].concat().as_slice());
     }
 
     #[test]
